@@ -34,7 +34,7 @@ def test_environment() -> None:
     obs, _ = env.reset()
     done = False
     while not done:
-        obs, reward, done, _, _ = env.step(np.array([]))
+        obs, reward, done, _, _ = env.step(env.action_space.sample())
 
 
 # def test_reset() -> None:

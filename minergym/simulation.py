@@ -8,6 +8,7 @@ This module only cares about control.
 """
 
 import collections
+import logging
 import pathlib
 import queue
 import threading
@@ -24,6 +25,9 @@ import pyenergyplus.api
 
 from .channel import Channel
 
+logger = logging.getLogger(__name__)
+
+
 api = pyenergyplus.api.EnergyPlusAPI()
 
 
@@ -37,6 +41,7 @@ class ManagedState:
 
         def delete_state(ep_state: c_void_p):
             api.state_manager.delete_state(ep_state)
+            logger.debug("Deleting energyplus state.")
 
         weakref.finalize(self, delete_state, s)
 
@@ -472,24 +477,26 @@ class EnergyPlusSimulation:
             assert False, "Should be unreachable."
 
     def step(self, action: dict[str, float]) -> tuple[Any, bool]:
-        if not isinstance(self.state, StateStarted):
-            raise InvalidStateException(StateStarted, self.state)
-
-        msg1 = self.state.channel.get()
-        if isinstance(msg1, IWantAction):
-            msg1.response.put(RunAction(action))
-            msg2 = self.state.channel.get()
-            if isinstance(msg2, IGotObservation):
-                obs = msg2.observation
-                return obs, False
-            elif isinstance(msg2, IShutDown):
-                return self.state.last_observation, True
-            elif isinstance(msg2, ICrashed):
-                raise msg2.exception
+        if isinstance(self.state, StateStarted):
+            msg1 = self.state.channel.get()
+            if isinstance(msg1, IWantAction):
+                msg1.response.put(RunAction(action))
+                msg2 = self.state.channel.get()
+                if isinstance(msg2, IGotObservation):
+                    obs = msg2.observation
+                    return obs, False
+                elif isinstance(msg2, IShutDown):
+                    return self.state.last_observation, True
+                elif isinstance(msg2, ICrashed):
+                    raise msg2.exception
+                else:
+                    assert False, "Should be unreachable."
             else:
-                assert False, "Should be unreachable."
+                raise Exception("TODO")
+        elif isinstance(self.state, StateDone):
+            return self.state.last_observation, True
         else:
-            raise Exception("TODO")
+            raise InvalidStateException(StateStarted, self.state)
 
     def stop(self):
         """When in a started state, stop the simulation."""
