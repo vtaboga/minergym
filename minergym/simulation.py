@@ -403,12 +403,18 @@ class EnergyPlusSimulation:
                     # caught the exception.
                     pass
                 elif isinstance(self.state, StateStarting):
-                    msg = (
-                        "The simulation exited before it finished starting. "
-                        "Perhaps your warmup_phases parameter is too high? "
-                        f"{self.state.number_of_warmup_phases_completed=}"
+                    old_state = self.state
+                    self.state = StateCrashed()
+                    old_state.channel.put(
+                        ICrashed(
+                            Exception(
+                                "The simulation exited before it finished starting. "
+                                "Perhaps your warmup_phases parameter is too high? "
+                                f"{old_state.number_of_warmup_phases_completed=}"
+                            )
+                        )
                     )
-                    raise Exception(msg)
+
                 else:
                     assert False, "Should be unreachable."
             else:
