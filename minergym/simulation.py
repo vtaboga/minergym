@@ -61,7 +61,10 @@ class VariableHandle:
 
 
 class InvalidVariable(Exception):
-    pass
+    def __init__(self, var: VariableHole):
+        super().__init__(
+            f"Invalid variable: name='{var.variable_name}', key='{var.variable_key}'"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +80,11 @@ class ActuatorHandle:
 
 
 class InvalidActuator(Exception):
-    pass
+    def __init__(self, act: ActuatorHole):
+        super().__init__(
+            f"Invalid actuator: component_type='{act.component_type}', "
+            f"control_type='{act.control_type}', actuator_key='{act.actuator_key}'"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +98,8 @@ class MeterHandle:
 
 
 class InvalidMeter(Exception):
-    pass
+    def __init__(self, met: MeterHole):
+        super().__init__(f"Invalid meter: name='{met.meter_name}'")
 
 
 @dataclass(frozen=True, slots=True)
