@@ -2,6 +2,7 @@ import gymnasium
 import minergym.environment as environment
 import minergym.simulation as simulation
 import numpy as np
+import pytest
 from minergym.data.building import crawlspace
 from minergym.data.weather import honolulu
 
