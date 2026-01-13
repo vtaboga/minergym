@@ -379,40 +379,40 @@ class EnergyPlusSimulation:
         additional callbacks while keeping the core "pause, get action, step"
         protocol unchanged.
         """
-        api.runtime.callback_begin_system_timestep_before_predictor(
+        api.runtime.callback_after_predictor_after_hvac_managers(
             ep_state, self.callback_timestep
         )
         # Re-apply the last action inside the HVAC iteration loop. Some HVAC
         # component actuators can be overwritten later in the same timestep by
         # EnergyPlus managers/controllers; this calling point is late enough for
         # the override to "stick".
-        api.runtime.callback_inside_system_iteration_loop(
-            ep_state, self._callback_inside_system_iteration_loop
-        )
+        # api.runtime.callback_inside_system_iteration_loop(
+        #     ep_state, self._callback_inside_system_iteration_loop
+        # )
 
-    def _callback_inside_system_iteration_loop(self, _state: c_void_p) -> None:
-        # This callback runs frequently (per HVAC system iteration). It MUST be
-        # non-blocking and fast.
-        if not isinstance(self.state, StateStarted):
-            return
+    # def _callback_inside_system_iteration_loop(self, _state: c_void_p) -> None:
+    #     # This callback runs frequently (per HVAC system iteration). It MUST be
+    #     # non-blocking and fast.
+    #     if not isinstance(self.state, StateStarted):
+    #         return
 
-        # Avoid interfering with warmup/sizing phases.
-        if not api.exchange.api_data_fully_ready(self.state.ep_state.inner):
-            return
-        if api.exchange.warmup_flag(self.state.ep_state.inner):
-            return
+    #     # Avoid interfering with warmup/sizing phases.
+    #     if not api.exchange.api_data_fully_ready(self.state.ep_state.inner):
+    #         return
+    #     if api.exchange.warmup_flag(self.state.ep_state.inner):
+    #         return
 
-        act = self._last_raw_action
-        if act is None:
-            return
+    #     act = self._last_raw_action
+    #     if act is None:
+    #         return
 
-        # Re-apply actuator values so they are not overwritten by later HVAC logic.
-        for accessor in optree.tree_accessors(act):
-            h: ActuatorHandle = accessor(self.state.actuator_handles)
-            the_value = accessor(act)
-            api.exchange.set_actuator_value(
-                self.state.ep_state.inner, h.handle, the_value
-            )
+    #     # Re-apply actuator values so they are not overwritten by later HVAC logic.
+    #     for accessor in optree.tree_accessors(act):
+    #         h: ActuatorHandle = accessor(self.state.actuator_handles)
+    #         the_value = accessor(act)
+    #         api.exchange.set_actuator_value(
+    #             self.state.ep_state.inner, h.handle, the_value
+    #         )
 
     def construct_handles(self, state: c_void_p) -> tuple[Any, Any]:
         if self.verbose:
