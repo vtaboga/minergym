@@ -158,3 +158,37 @@ def test_simulation_stop() -> None:
     assert isinstance(sim.state, simulation.StateDone)
 
     assert not thread.is_alive()
+
+
+def test_register_callbacks_energyplus_simulation(monkeypatch) -> None:
+    calls: list[tuple[str, object, object]] = []
+
+    def fake_begin(ep_state, cb):
+        calls.append(("begin_system_timestep_before_predictor", ep_state, cb))
+
+    def fake_inside(ep_state, cb):
+        calls.append(("inside_system_iteration_loop", ep_state, cb))
+
+    monkeypatch.setattr(
+        simulation.api.runtime,
+        "callback_begin_system_timestep_before_predictor",
+        fake_begin,
+    )
+    monkeypatch.setattr(
+        simulation.api.runtime,
+        "callback_inside_system_iteration_loop",
+        fake_inside,
+    )
+
+    sim = simulation.EnergyPlusSimulation(
+        Path("building.epJSON"), Path("weather.epw"), {}, {}, verbose=False
+    )
+    ep_state = simulation.c_void_p()
+    sim.register_callbacks(ep_state)
+
+    assert ("begin_system_timestep_before_predictor", ep_state, sim.callback_timestep) in calls
+    assert (
+        "inside_system_iteration_loop",
+        ep_state,
+        sim._callback_inside_system_iteration_loop,
+    ) in calls
