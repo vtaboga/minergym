@@ -9,6 +9,7 @@ This module only cares about control.
 
 import collections
 import logging
+import os
 import pathlib
 import queue
 import threading
@@ -61,7 +62,10 @@ class VariableHandle:
 
 
 class InvalidVariable(Exception):
-    pass
+    def __init__(self, var: VariableHole):
+        super().__init__(
+            f"Invalid variable: name='{var.variable_name}', key='{var.variable_key}'"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +81,11 @@ class ActuatorHandle:
 
 
 class InvalidActuator(Exception):
-    pass
+    def __init__(self, act: ActuatorHole):
+        super().__init__(
+            f"Invalid actuator: component_type='{act.component_type}', "
+            f"control_type='{act.control_type}', actuator_key='{act.actuator_key}'"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +99,8 @@ class MeterHandle:
 
 
 class InvalidMeter(Exception):
-    pass
+    def __init__(self, met: MeterHole):
+        super().__init__(f"Invalid meter: name='{met.meter_name}'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +225,8 @@ class EnergyPlusSimulation:
     verbose: bool = True
 
     state: SimulationState = field(default=StateInit(), init=False)
+    _last_set_actuators: dict[int, float] = field(default_factory=dict, init=False)
+    _last_raw_action: Any | None = field(default=None, init=False)
 
     def _reverse_step(self):
         """Send the current observation, then receive an action and run it."""
@@ -235,6 +246,22 @@ class EnergyPlusSimulation:
 
         if isinstance(self.state, StateStarted):
             state = self.state
+
+
+            debug_actuators = os.environ.get("MINERGYM_DEBUG_ACTUATORS", "").strip() == "1"
+            if debug_actuators and self._last_set_actuators:
+                # Check if EnergyPlus changed actuator values between timesteps.
+                for handle, prev in list(self._last_set_actuators.items()):
+                    try:
+                        cur = api.exchange.get_actuator_value(state.ep_state.inner, handle)
+                    except Exception:
+                        continue
+                    if abs(float(cur) - float(prev)) > 1e-6:
+                        logger.warning(
+                            "Actuator value changed between timesteps (possible override): "
+                            f"handle={handle} prev={prev} cur={cur}"
+                        )
+
             obs = optree.tree_map(
                 lambda han: get_handle_value(state.ep_state.inner, han),
                 self.state.observation_handles,
@@ -249,13 +276,48 @@ class EnergyPlusSimulation:
             response = response_chan.get()
             if isinstance(response, RunAction):
                 act = response.act
+                # Cache the latest raw action so subclasses/callbacks can
+                # re-apply actuator values at a later calling point if needed.
+                self._last_raw_action = act
+                if debug_actuators:
+                    try:
+                        logger.info(f"Applying raw action to EnergyPlus: {act}")
+                    except Exception:
+                        logger.info("Applying raw action to EnergyPlus (unprintable)")
+
                 # same path and set its value.
                 for accessor in optree.tree_accessors(act):
                     h: ActuatorHandle = accessor(self.state.actuator_handles)
                     the_value = accessor(act)
+
+                    before = None
+                    if debug_actuators:
+                        try:
+                            before = api.exchange.get_actuator_value(
+                                self.state.ep_state.inner, h.handle
+                            )
+                        except Exception:
+                            before = None
+
                     api.exchange.set_actuator_value(
                         self.state.ep_state.inner, h.handle, the_value
                     )
+
+                    after = None
+                    if debug_actuators:
+                        try:
+                            after = api.exchange.get_actuator_value(
+                                self.state.ep_state.inner, h.handle
+                            )
+                        except Exception:
+                            after = None
+                        logger.info(
+                            f"set_actuator_value handle={h.handle} value={the_value} "
+                            f"before={before} after={after}"
+                        )
+
+                    # Track last value we attempted to set for override detection.
+                    self._last_set_actuators[h.handle] = float(the_value)
             elif isinstance(response, ShutDown):
                 api.runtime.stop_simulation(self.state.ep_state.inner)
                 return
@@ -310,6 +372,48 @@ class EnergyPlusSimulation:
 
         self.n_steps += 1
 
+    def register_callbacks(self, ep_state: c_void_p) -> None:
+        """Register runtime callbacks.
+
+        Split out for testability and extensibility: subclasses may register
+        additional callbacks while keeping the core "pause, get action, step"
+        protocol unchanged.
+        """
+        api.runtime.callback_after_predictor_after_hvac_managers(
+            ep_state, self.callback_timestep
+        )
+        # Re-apply the last action inside the HVAC iteration loop. Some HVAC
+        # component actuators can be overwritten later in the same timestep by
+        # EnergyPlus managers/controllers; this calling point is late enough for
+        # the override to "stick".
+        # api.runtime.callback_inside_system_iteration_loop(
+        #     ep_state, self._callback_inside_system_iteration_loop
+        # )
+
+    # def _callback_inside_system_iteration_loop(self, _state: c_void_p) -> None:
+    #     # This callback runs frequently (per HVAC system iteration). It MUST be
+    #     # non-blocking and fast.
+    #     if not isinstance(self.state, StateStarted):
+    #         return
+
+    #     # Avoid interfering with warmup/sizing phases.
+    #     if not api.exchange.api_data_fully_ready(self.state.ep_state.inner):
+    #         return
+    #     if api.exchange.warmup_flag(self.state.ep_state.inner):
+    #         return
+
+    #     act = self._last_raw_action
+    #     if act is None:
+    #         return
+
+    #     # Re-apply actuator values so they are not overwritten by later HVAC logic.
+    #     for accessor in optree.tree_accessors(act):
+    #         h: ActuatorHandle = accessor(self.state.actuator_handles)
+    #         the_value = accessor(act)
+    #         api.exchange.set_actuator_value(
+    #             self.state.ep_state.inner, h.handle, the_value
+    #         )
+
     def construct_handles(self, state: c_void_p) -> tuple[Any, Any]:
         if self.verbose:
             print("constructing handles")
@@ -358,11 +462,12 @@ class EnergyPlusSimulation:
         )
 
         def get_actuator_handle(act: ActuatorHole) -> ActuatorHandle:
-            return ActuatorHandle(
-                api.exchange.get_actuator_handle(
-                    state, act.component_type, act.control_type, act.actuator_key
-                )
+            han = api.exchange.get_actuator_handle(
+                state, act.component_type, act.control_type, act.actuator_key
             )
+            if han < 0:
+                raise InvalidActuator(act)
+            return ActuatorHandle(han)
 
         actuator_handles = optree.tree_map(
             get_actuator_handle,
@@ -455,9 +560,7 @@ class EnergyPlusSimulation:
             is_leaf=lambda x: isinstance(x, VariableHole),
         )
 
-        api.runtime.callback_begin_system_timestep_before_predictor(
-            managed_ep_state.inner, self.callback_timestep
-        )
+        self.register_callbacks(managed_ep_state.inner)
 
         def warmup_callback(state: c_void_p):
             if self.verbose:
@@ -565,3 +668,5 @@ class EnergyPlusSimulation:
                 raise RuntimeError("Unreachable")
 
         return out
+
+
