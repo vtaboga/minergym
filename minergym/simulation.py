@@ -641,9 +641,15 @@ class EnergyPlusSimulation:
         if isinstance(self.state, StateStarted):
             self.stop()
         elif isinstance(self.state, StateStarting):
-            raise NotImplemented
+            raise NotImplementedError(
+                "try_stop() called while simulation is still starting; "
+                "this is not yet supported."
+            )
         elif isinstance(self.state, StateCrashed):
             # nothing to do
+            return
+        elif isinstance(self.state, StateDone):
+            # simulation already finished naturally; nothing to stop
             return
 
     def get_api_endpoints(
