@@ -95,7 +95,11 @@ class EnergyPlusEnvironment(gymnasium.Env, typing.Generic[ObsType, ActType]):
         self.thread_join_timeout: float = thread_join_timeout
 
     def close(self) -> None:
-        if self.ep is not None:
+        # Gate cleanup on whether a simulation was actually running.
+        # close() is called polymorphically from reset() (after the subclass
+        # may have already nulled self.ep), so this guard makes it idempotent.
+        had_ep = self.ep is not None
+        if had_ep:
             # Capture the thread reference before try_stop() transitions the
             # simulation state from StateStarted to StateDone (which drops
             # the ep_thread attribute from the state object).
@@ -117,7 +121,7 @@ class EnergyPlusEnvironment(gymnasium.Env, typing.Generic[ObsType, ActType]):
 
         gc.collect()
 
-        if self.cleanup_output_dir_on_close and self.eplus_output_dir is not None:
+        if had_ep and self.cleanup_output_dir_on_close and self.eplus_output_dir is not None:
             shutil.rmtree(self.eplus_output_dir, ignore_errors=True)
 
     def reset(
@@ -128,6 +132,12 @@ class EnergyPlusEnvironment(gymnasium.Env, typing.Generic[ObsType, ActType]):
     ) -> typing.Tuple[typing.Any, dict[str, typing.Any]]:
         super().reset()
         self.close()
+
+        # Recreate the output directory so EnergyPlus has a clean destination.
+        # close() may have rmtree'd it (when cleanup_output_dir_on_close=True),
+        # so mkdir here ensures the directory exists before make_energyplus().
+        if self.eplus_output_dir is not None:
+            self.eplus_output_dir.mkdir(parents=True, exist_ok=True)
 
         self.ep = self.make_energyplus()
         obs, over = self.ep.start()
